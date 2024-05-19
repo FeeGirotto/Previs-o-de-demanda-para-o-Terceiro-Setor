@@ -1,0 +1,438 @@
+#Limpeza da Memória
+rm(list=ls(all=TRUE))
+
+#Pacotes Necessários
+library(fpp3)
+library(urca)
+library(readxl)
+library(plotly)
+library(seasonal)
+library(seasonalview)
+library(forecast)  #Principal pacote para previsão
+library(tsibble)   #Para gerar objetos tipo tisbble e usar nas previsões
+library(fable)     #Para usar a função model()
+library(fabletools)
+library(lubridate) #Para inserir datas
+library(dplyr)     #Para operadores como mutate
+library(ggplot2)   #Para gerar gráficos
+library(feasts)    #Pacote para características em séries temporais
+library(trend) 
+library(randtests) #Para o teste de tendência
+library(zoo)
+
+#############################
+# Abrindo o arquivo #
+#############################
+
+# Definir o caminho do arquivo Excel
+caminho_do_arquivo <- "C:/Users/felip/Desktop/Basefraldas.xlsx"
+
+# Ler os dados de uma planilha específica (por exemplo, a primeira planilha)
+dados <- read_excel(caminho_do_arquivo, sheet = 1)
+
+# Exibir o DataFrame
+View(dados)
+print(dados)
+
+#############################
+# Gerando gráfico da série temporal #
+#############################
+
+x11()
+ggplot(data = dados, aes(x = Período, y = Geral)) +
+  geom_line(color = "blue", linewidt = 0.7) +  # Define a cor da linha e a espessura
+  labs(title = "Série Temporal da demanda de fraldas - jul.2020 a dez.2023", x = "Período", y = "Quantidade") +
+  theme_minimal() +  # Aplique um tema mínimo
+  theme(plot.title = element_text(hjust = 0.5, size = 14),  # Ajusta o tamanho da fonte do título
+        axis.title.x = element_text(size = 14),  # Ajusta o tamanho da fonte do rótulo do eixo x
+        axis.title.y = element_text(size = 14))  # Ajusta o tamanho da fonte do rótulo do eixo y
+
+#############################
+# Seleção da coluna a ser utilizada no estudo #
+#############################
+
+st.fraldas <- ts(dados$Geral, frequency = 12)
+
+#############################
+# Gerando tabela estatística descritiva #
+#############################
+
+summary(st.fraldas)
+
+#############################
+# Autocorrelação (ACF) e Autocorrelação parcial (PACF) #
+#############################
+
+# Calcular ACF e plotar
+
+x11()
+acf(st.fraldas, main = "Função de Autocorrelação (ACF) para st.fraldas")
+
+# Calcular PACF e plotar
+
+x11()
+pacf(st.fraldas, main = "Função de Autocorrelação Parcial (PACF) para st.fraldas")
+
+#############################
+# Testes de Hipóteses para identificação de padrões #
+#############################
+
+#############################
+# Aqui vamos avaliar a estacionáridade da série
+#############################
+
+#############################
+# Teste ADF (Dickey-Fuller Aumentado) #
+#############################
+
+# H0: Série tem raiz unitária (exemplo --- |esse|<|esse|)(menor que <), então NÃO é estacionária.
+# Ha: Série NÃO tem raiz unitária (exemplo --- |esse|>|esse|)(maior que >), então é estacionária.
+
+args(ur.df)   #Mostra os argumentos da função que computa o teste ADF
+
+adf_test <- ur.df(st.fraldas, lags = 5, type = "trend", selectlags = "AIC")
+adf_test@testreg
+
+# z.lag.1 é o coeficiente de interesse para teste da raiz unitária.
+# Para avaliar a sua insignificância precisamos da tabela de valores críticos que fica na variável adf_test@cval do teste.
+
+# Estatística do teste
+adf_test@cval 
+summary(adf_test)@teststat
+
+# Como (t value) para z.lag.1  = -3.219 e o valor de (tau3) para 5pct é -3.50, ao avaliar |-3.219| < |-3.50|, aceita-se H0.
+# Então a série tem raiz unitária, portanto não é estaciconária.
+
+# Análise dos resíduos da regressão
+x11(width = 10, height = 6)  # Ajuste o tamanho do dispositivo gráfico
+plot(adf_test)
+
+# Para verificar quantas diferenciações devem ser realizadas para deixar a série estacionáira
+ndiffs(st.fraldas)
+
+#############################
+# Aqui vamos avaliar a tendência da série
+#############################
+
+#############################
+# Teste Man-Kendall #
+#############################
+
+#H0: NÃO apresenta tendência
+#Ha: Apresenta tendência
+
+mankendall_test<-mk.test(st.fraldas)
+mankendall_test
+
+# p-value < 0,05 rejeita H0
+# p-value > 0,05 aceita H0
+# Considerando um nível de significância de 5%, com p-valor=0.006, rejeita H0
+# então a série apresenta tendência.
+
+#############################
+# Aqui vamos avaliar a sazonalidade da série #
+#############################
+
+#############################
+# Teste de Kruskal-Wallis #
+#############################
+
+#Para este teste, cada mês é suposto como uma amostra de uma população
+#H0: NÃO apresenta sazonalidade
+#Ha: Apresenta sazonalidade
+
+kw_test<-kruskal.test(dados$Período ~ dados$Geral)
+kw_test
+
+# Considerando o p-value maior do que um nível de significância comum, como 0.05, não há evidências suficientes 
+# para rejeitar a hipótese nula, com p-valor=0.470.
+# Portanto, não rejeita H0 então a série não apresenta sazonalidade.
+
+#############################
+# Treinamento dos dados #
+#############################
+
+str(dados)
+
+# Convertendo a coluna de data para o formato Date
+dados$Período <- as.Date(dados$Período)
+
+str(dados)
+
+# Criando o objeto tsibble
+dados.ts <- tsibble(
+  Data = dados$Período,
+  Quantidade = dados$Geral
+)
+
+head(dados.ts)
+
+dados.ts<-dados.ts %>%
+  mutate(Data = yearmonth(Data)) %>%
+  as_tsibble(index = Data)
+
+head(dados.ts)
+
+# Definindo o conjunto de treinamento 2020 to 2022
+train <- dados.ts %>%
+  filter_index("2020-07-01" ~ "2023-06-01")
+
+# Definindo o conjunto de teste julho de 2023 à dezembro de 2023
+test<-dados.ts %>%
+  filter_index("2023-07-01" ~ "2023-12-01") 
+
+View(train)
+View(test)
+View(dados.ts)
+
+#############################
+# Ajustando os modelos #
+#############################
+
+# MODELOS QUE UTILIZEI NA PESQUISA #
+# Suavização exponencial simples - SES
+# Suavização exponencial de Holt - Holt
+# Média móvel simples - SMA
+# Média móvel ponderada - WMA
+# Modelo autorregressivo integrados de média móvel - ARIMA
+
+##### Suavização Exponencial Simples (SES) #####
+ses_model <- train %>%
+  fabletools::model(
+    ses = fable::ETS(Quantidade ~ error("A") + trend("N") + season("N"))
+  )
+
+# Apresentar os coeficientes do modelo
+fabletools::report(ses_model)
+
+
+##### Suavização Exponencial de Holt (Holt) #####
+holt_model <- train %>%
+  fabletools::model(
+    holt = fable::ETS(Quantidade ~ error("A") + trend("A") + season("N"))
+  )
+
+# Apresentar os coeficientes do modelo
+fabletools::report(holt_model)
+
+
+##### Média Móvel Simples (SMA) #####
+sma_model <- rollmean(train$Quantidade, k = 5, align = "right", fill = NA)
+
+
+##### Média móvel ponderada com 5 períodos #####
+wma_model <- sapply(1:length(train$Quantidade), function(i) {
+  if (i < 3 || i > length(train$Quantidade) - 2) {
+    return(NA)
+  } else {
+    return(weighted.mean(train$Quantidade[(i - 2):(i + 2)], c(0.06, 0.16, 0.09, 0.39, 0.30)))
+  }
+})
+
+
+##### Modelo Autorregressivo Integrado de Média Móvel (ARIMA) #####
+
+fit.ARIMA<-auto.arima((dados.ts), trace=TRUE)
+fit.ARIMA
+
+# Para verificar quantas diferenciações devem ser realizadas para deixar a série estacionáira
+ndiffs(st.fraldas)
+
+#ARIMA(0,1,1) (p,d,q)
+# p vem do pAcF
+# q vem do AcF
+# d vem da diferenciação 
+
+arima_model <- train %>%
+  fabletools::model(
+    arima = fable::ARIMA(Quantidade),
+  )
+
+
+#############################
+# Gerando previsão para os 6 meses de teste #
+#############################
+
+# Previsão teste 6 meses SES
+Previsão_ses <- ses_model %>% forecast(h = 6)
+View(Previsão_ses)
+
+# Previsão teste 6 meses holt
+Previsão_holt <- holt_model %>% forecast(h = 6)
+View(Previsão_holt)
+
+# Previsão teste 6 meses ARIMA
+Previsão_arima <- arima_model %>% forecast(h = 6)
+View(Previsão_arima)
+
+# Previsão teste 6 meses SMA
+ultimos_5 <- tail(train$Quantidade, 5)
+print(ultimos_5)
+
+primeira_previsão = ((ultimos_5[1]+ultimos_5[2]+ultimos_5[3]+ultimos_5[4]+ultimos_5[5])/5)
+segunda_previsão = ((ultimos_5[2]+ultimos_5[3]+ultimos_5[4]+ultimos_5[5]+primeira_previsão[1])/5)
+terceira_previsão = ((ultimos_5[3]+ultimos_5[4]+ultimos_5[5]+primeira_previsão[1]+segunda_previsão[1])/5)
+quarta_previsão = ((ultimos_5[4]+ultimos_5[5]+primeira_previsão[1]+segunda_previsão[1]+terceira_previsão[1])/5)
+quinta_previsão = ((ultimos_5[5]+primeira_previsão[1]+segunda_previsão[1]+terceira_previsão[1]+quarta_previsão[1])/5)
+sexta_previsão = ((primeira_previsão[1]+segunda_previsão[1]+terceira_previsão[1]+quarta_previsão[1]+quinta_previsão[1])/5)
+print(primeira_previsão)
+print(segunda_previsão)
+print(terceira_previsão)
+print(quarta_previsão)
+print(quinta_previsão)
+print(sexta_previsão)
+
+Previsão_sma <- c(primeira_previsão[1], segunda_previsão[1], 
+                  terceira_previsão[1], quarta_previsão[1],
+                  quinta_previsão[1], sexta_previsão[1])
+print(Previsão_sma)
+
+# Previsão teste 6 meses wma
+
+Previsão_wma <- c(32610.99, 31620.15, 33179.72, 33031.70, 32923.17, 32752.62)
+
+print(Previsão_wma)
+
+#############################
+# Plotando os valores atuais e as previsões #  ########### TROCAR QUANTIDADE.FC PELOS MODELOS
+#############################
+
+# Combinação dos resultados das previsões com a série original
+previsoes <- tibble(
+  Data = seq.Date(from = as.Date("2023-07-01"), by = "month", length.out = 6),
+  SES = Previsão_ses$.mean,
+  Holt = Previsão_holt$.mean,
+  ARIMA = Previsão_arima$.mean,
+  SMA = Previsão_sma,
+  WMA = Previsão_wma
+)
+
+# Adicionando a série original aos resultados das previsões
+previsoes <- previsoes %>%
+  left_join(select(test, Data, Quantidade), by = "Data")
+
+# Convertendo a tabela para o formato longo para facilitar a plotagem
+previsoes_long <- previsoes %>%
+  pivot_longer(cols = c(SES, Holt, ARIMA, SMA, WMA), names_to = "Modelo", values_to = "Previsao")
+
+# Plotando os resultados
+x11()
+ggplot() +
+  geom_line(data = previsoes_long, aes(x = Data, y = Quantidade, color = "Série Original"), linetype = "solid") +
+  geom_line(data = previsoes_long, aes(x = Data, y = Previsao, color = Modelo), linetype = "dashed") +
+  labs(title = "Comparação entre a série temporal e as previsões de teste",
+       subtitle = "Julho de 2023 à Dezembro de 2023",
+       x = "Período", y = "Quantidade") +
+  scale_color_manual(values = c("Série Original" = "black", "SES" = "blue", "Holt" = "red", "ARIMA" = "brown", "SMA" = "purple", "WMA" = "darkcyan")) +
+  theme_minimal()
+
+#############################
+# Medidas de acurácia #
+#############################
+
+
+# Calculando métricas de precisão para cada método de previsão
+
+# RMSE (Root Mean Squared Error)
+rmse <- function(observed, predicted) {
+  sqrt(mean((observed - predicted)^2))
+}
+
+# MAE (Mean Absolute Error)
+mae <- function(observed, predicted) {
+  mean(abs(observed - predicted))
+}
+
+# MAPE (Mean Absolute Percentage Error)
+mape <- function(observed, predicted) {
+  mean(abs((observed - predicted) / observed)) * 100
+}
+
+# Calculando as métricas para cada método de previsão
+ses_rmse <- rmse(previsoes$Quantidade, previsoes$SES)
+ses_mae <- mae(previsoes$Quantidade, previsoes$SES)
+ses_mape <- mape(previsoes$Quantidade, previsoes$SES)
+
+holt_rmse <- rmse(previsoes$Quantidade, previsoes$Holt)
+holt_mae <- mae(previsoes$Quantidade, previsoes$Holt)
+holt_mape <- mape(previsoes$Quantidade, previsoes$Holt)
+
+arima_rmse <- rmse(previsoes$Quantidade, previsoes$ARIMA)
+arima_mae <- mae(previsoes$Quantidade, previsoes$ARIMA)
+arima_mape <- mape(previsoes$Quantidade, previsoes$ARIMA)
+
+sma_rmse <- rmse(previsoes$Quantidade, previsoes$SMA)
+sma_mae <- mae(previsoes$Quantidade, previsoes$SMA)
+sma_mape <- mape(previsoes$Quantidade, previsoes$SMA)
+
+wma_rmse <- rmse(previsoes$Quantidade, previsoes$WMA)
+wma_mae <- mae(previsoes$Quantidade, previsoes$WMA)
+wma_mape <- mape(previsoes$Quantidade, previsoes$WMA)
+
+
+# Imprimindo as métricas
+cat("Métricas de Precisão para as Previsões:\n")
+cat("SES - RMSE:", ses_rmse, "MAE:", ses_mae, "MAPE:", ses_mape, "\n")
+cat("Holt - RMSE:", holt_rmse, "MAE:", holt_mae, "MAPE:", holt_mape, "\n")
+cat("ARIMA - RMSE:", arima_rmse, "MAE:", arima_mae, "MAPE:", arima_mape, "\n")
+cat("SMA - RMSE:", sma_rmse, "MAE:", sma_mae, "MAPE:", sma_mape, "\n")
+cat("WMA - RMSE:", wma_rmse, "MAE:", wma_mae, "MAPE:", wma_mape, "\n")
+
+
+#############################
+# Previsão do modelo SMA que apresentou melhor acurácia #
+#############################
+
+# Previsão 6 meses SMA
+print(dados.ts)
+
+
+jan_2024_previsão = ((dados.ts$Quantidade[38]+dados.ts$Quantidade[39]+dados.ts$Quantidade[40]
+                      +dados.ts$Quantidade[41]+dados.ts$Quantidade[42])/5)
+fev_2024_previsão = ((dados.ts$Quantidade[39]+dados.ts$Quantidade[40]
+                      +dados.ts$Quantidade[41]+dados.ts$Quantidade[42]+jan_2024_previsão[1])/5)
+mar_2024_previsão = ((dados.ts$Quantidade[40]+dados.ts$Quantidade[41]+dados.ts$Quantidade[42]
+                      +jan_2024_previsão[1]+fev_2024_previsão[1])/5)
+abr_2024_previsão = ((dados.ts$Quantidade[41]+dados.ts$Quantidade[42]+jan_2024_previsão[1]
+                      +fev_2024_previsão[1]+mar_2024_previsão[1])/5)
+
+print(jan_2024_previsão)
+print(fev_2024_previsão)
+print(mar_2024_previsão)
+print(abr_2024_previsão)
+
+
+Previsão_2024_sma <- c(32219, jan_2024_previsão[1], fev_2024_previsão[1], 
+                  mar_2024_previsão[1], abr_2024_previsão[1])
+print(Previsão_2024_sma)
+
+# Métricas de acurácia para 2024 - SMA e demanda real
+Previsão_2024_sma_para_acurácia <- c(jan_2024_previsão[1], fev_2024_previsão[1], 
+                       mar_2024_previsão[1], abr_2024_previsão[1])
+print(Previsão_2024_sma_para_acurácia)
+
+Demanda_real_2024 <- c(39938, 28663, 30301, 32107)
+
+sma_2024_rmse <- rmse(Demanda_real_2024, Previsão_2024_sma_para_acurácia)
+sma_2024_mae <- mae(Demanda_real_2024, Previsão_2024_sma_para_acurácia)
+sma_2024_mape <- mape(Demanda_real_2024, Previsão_2024_sma_para_acurácia)
+cat("SMA_2024 - RMSE:", sma_2024_rmse, "MAE:", sma_2024_mae, "MAPE:", sma_2024_mape, "\n")
+
+# Criando um novo objeto com os dados de 2024
+dados_2024 <- tibble(
+  Data = as.Date(c("2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01")),
+  Quantidade = c(jan_2024_previsão[1], fev_2024_previsão[1], mar_2024_previsão[1], abr_2024_previsão[1])
+)
+
+# Combinando a série original até dezembro de 2023 com a previsão para 2024 do modelo SMA
+dados_completos <- bind_rows(dados.ts, dados_2024)
+
+# Plotando a série original e a previsão do modelo SMA
+x11()
+ggplot() +
+  geom_line(data = dados_completos, aes(x = Data, y = Quantidade, color = "Série Original"), linetype = "solid") +
+  geom_line(data = dados_2024, aes(x = Data, y = Quantidade, color = "Previsão SMA"), linetype = "dashed") +
+  labs(title = "Previsão da demanda de fraldas para os primeiros meses de 2024",
+       x = "Período", y = "Quantidade") +
+  scale_color_manual(values = c("Série Original" = "black", "Previsão SMA" = "skyblue")) +
+  theme_minimal()
